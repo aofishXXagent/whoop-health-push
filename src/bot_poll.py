@@ -160,11 +160,23 @@ def run():
     print("[Bot] Starting poll...")
     init_db()
 
-    feishu = FeishuClient()
     state = _load_state()
-    last_id = state.get("last_message_id")
 
-    messages = feishu.list_messages()
+    # ── 兜底晨报（独立于消息轮询，确保即使飞书读取失败也能发报告）──
+    _maybe_send_daily_report(state)
+
+    # ── 消息轮询 ──
+    try:
+        feishu = FeishuClient()
+        last_id = state.get("last_message_id")
+        messages = feishu.list_messages()
+    except Exception as e:
+        print(f"[Bot] Feishu list_messages failed: {e}")
+        print("[Bot] Skipping message poll, saving state")
+        state["last_check_ts"] = datetime.now(BEIJING_TZ).isoformat()
+        state["last_error"] = f"list_messages: {e}"
+        _save_state(state)
+        return
 
     # 找出 last_id 之后的新消息
     new_msgs = []
@@ -189,14 +201,16 @@ def run():
         # 首次运行，记录最新消息 ID，发一条就绪消息
         if messages:
             state["last_message_id"] = messages[0].get("message_id", "")
-        feishu.send_text("🤖 健康助手已就绪！有什么健康问题随时问我～")
+        try:
+            feishu.send_text("🤖 健康助手已就绪！有什么健康问题随时问我～")
+        except Exception as e:
+            print(f"[Bot] Failed to send ready message: {e}")
         _save_state(state)
         print("[Bot] First run, sent ready message")
         return
 
     if not new_msgs:
         state["last_check_ts"] = datetime.now(BEIJING_TZ).isoformat()
-        _maybe_send_daily_report(state)
         _save_state(state)
         print("[Bot] No new messages")
         return
@@ -213,13 +227,15 @@ def run():
 
         prompt = f"用户的 Whoop 健康数据：\n{whoop_ctx}\n\n用户说：{user_text}"
         reply = ai.chat(BOT_SYSTEM_PROMPT, prompt, max_tokens=600)
-        feishu.send_text(reply)
+        try:
+            feishu.send_text(reply)
+        except Exception as e:
+            print(f"[Bot] Failed to send reply: {e}")
         print(f"[Bot] Replied to: {user_text[:30]}...")
 
         state["last_message_id"] = msg.get("message_id", "")
 
     state["last_check_ts"] = datetime.now(BEIJING_TZ).isoformat()
-    _maybe_send_daily_report(state)
     _save_state(state)
     print(f"[Bot] Processed {len(new_msgs)} messages")
 
