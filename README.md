@@ -1,151 +1,185 @@
-# WHOOP 健康推送系统
+# WHOOP Health Push
 
-基于 WHOOP 手环数据的全自动健康分析与推送系统。通过 GitHub Actions 云端运行，**无需本地电脑在线**，每天自动获取健康数据，调用 AI 生成深度分析报告，推送至飞书群。
+Personal health data pipeline: automatically sync WHOOP data, generate AI health reports, and push to Feishu (Lark).
 
-```
-WHOOP 手环 → WHOOP API → GitHub Actions → MiniMax AI → 飞书推送
-                              ↓
-                     SQLite + Excel 数据沉淀
-```
+## Features
 
----
+- 🔄 **Auto sync** — Pull recovery, sleep, strain, and workout data from WHOOP API
+- 🤖 **AI health reports** — Daily briefings powered by MiniMax AI
+- 💬 **Feishu bot** — Push reports and answer health questions via Feishu
+- 🔐 **Safe token management** — Handles WHOOP's rotating refresh tokens without breaking
+- 📊 **Data export** — SQLite database + Excel + CSV files
 
-## 功能
-
-### 每日健康晨报（北京时间 08:00）
-- ⚡ 今日一句话：身体状态 + 最该做的一件事
-- 😴 睡眠分析：时长 / 深睡REM占比 / 干扰次数 / 今晚改善建议
-- 💚 身体状态：恢复分 / HRV / 静息心率（均与7天均值对比）
-- 🏃 运动建议：结合近期训练记录，给出具体强度和时长
-- 🧠 精力与压力：工作节奏建议 + 减压行动
-- 📈 本周趋势：恢复/睡眠/HRV 是在变好还是变差
-- 7 天趋势图表（恢复分 / HRV / 睡眠时长 / 压力负荷）
-
-### 飞书机器人实时问答
-- 在飞书群内直接提问，基于最近 7 天真实数据回答
-- 支持："今天能跑步吗？"、"昨晚睡得怎么样？"、"我这周状态如何？"
-
-### 可靠性保障
-- **双保险机制**：daily-report cron 为主触发，bot-poll 每次运行时兜底检查今日晨报是否已发，超过 08:00 未发则自动补发
-- **Token 自动轮换**：WHOOP access token 到期时自动刷新并写回 GitHub Secrets，无需人工干预
-
----
-
-## 技术架构
-
-| 组件 | 技术 |
-|------|------|
-| 调度平台 | GitHub Actions（免费，无需服务器） |
-| AI 模型 | MiniMax M2.7 |
-| 数据源 | WHOOP API（OAuth2） |
-| 推送渠道 | 飞书开放平台 |
-| 数据存储 | SQLite + Excel |
-| 图表 | matplotlib |
-
-### 文件结构
+## Architecture
 
 ```
-├── .github/workflows/
-│   ├── daily-report.yml     # 每日晨报 workflow
-│   └── bot-poll.yml         # 机器人轮询 + 兜底推送
+┌─────────────────┐     ┌──────────────┐     ┌────────────┐
+│   WHOOP API     │────▶│  This Repo   │────▶│  Feishu    │
+│  (health data)  │     │  (sync+AI)   │     │  (reports) │
+└─────────────────┘     └──────────────┘     └────────────┘
+                              │
+                        ┌─────┴─────┐
+                        │  SQLite   │
+                        │  + CSV    │
+                        └───────────┘
+```
+
+**Runs in two modes:**
+- **Local** (recommended): LaunchAgent/cron on your Mac, uses `credentials.json`
+- **Cloud**: GitHub Actions on schedule, uses GitHub Secrets
+
+## Quick Start
+
+### 1. Get WHOOP API Credentials
+
+1. Go to [WHOOP Developer Portal](https://developer.whoop.com/)
+2. Create an app with redirect URI: `http://localhost:8080/callback`
+3. Note your `client_id` and `client_secret`
+
+### 2. Authorize
+
+```bash
+# Clone the repo
+git clone https://github.com/aofishXXagent/whoop-health-push.git
+cd whoop-health-push
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run OAuth flow (opens browser)
+python3 scripts/auth_whoop.py
+```
+
+This creates `credentials.json` with your tokens.
+
+### 3. Sync Data
+
+```bash
+# One-time sync
+python3 -m src.export_local
+
+# Or test the token manager
+python3 -m src.token_manager
+```
+
+### 4. Set Up Auto-Sync (macOS)
+
+```bash
+# Create a LaunchAgent for daily sync
+cat > ~/Library/LaunchAgents/com.whoop.daily-sync.plist << EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.whoop.daily-sync</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>python3</string>
+        <string>$(pwd)/src/export_local.py</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>7</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+        <key>WHOOP_CRED_PATH</key>
+        <string>$(pwd)/credentials.json</string>
+    </dict>
+</dict>
+</plist>
+EOF
+
+launchctl load ~/Library/LaunchAgents/com.whoop.daily-sync.plist
+```
+
+### 5. GitHub Actions (Optional Cloud Backup)
+
+Set these GitHub Secrets:
+
+| Secret | Description |
+|--------|-------------|
+| `WHOOP_CLIENT_ID` | From WHOOP developer portal |
+| `WHOOP_CLIENT_SECRET` | From WHOOP developer portal |
+| `WHOOP_ACCESS_TOKEN` | From auth script output |
+| `WHOOP_REFRESH_TOKEN` | From auth script output |
+| `WHOOP_TOKEN_SAVED_AT` | From auth script output |
+| `GH_PAT` | GitHub PAT with `repo` scope (for token rotation) |
+| `MINIMAX_API_KEY` | (Optional) For AI reports |
+| `FEISHU_APP_ID` | (Optional) For Feishu bot |
+| `FEISHU_APP_SECRET` | (Optional) For Feishu bot |
+| `FEISHU_CHAT_ID` | (Optional) For Feishu bot |
+| `FEISHU_BOT_OPEN_ID` | (Optional) For Feishu bot |
+
+## Token Management
+
+WHOOP uses **rotating refresh tokens** — each refresh token can only be used once. This is the most common source of issues.
+
+### How `token_manager.py` Protects You
+
+```
+Request → Is access token valid?
+           ├── YES → Use it directly (no refresh consumed!)
+           └── NO (401) → Backup old creds
+                          → Refresh token
+                          → Atomic save new tokens
+                          → Use new access token
+```
+
+**Key principles:**
+1. **Never refresh preemptively** — only when you get a 401
+2. **Atomic saves** — write to `.tmp` file, then `os.replace()` (no partial writes)
+3. **Backup before refresh** — `credentials.json.backup` always has the last known good state
+4. **One refresh token consumer** — don't run multiple instances that might both try to refresh
+
+### If Tokens Break
+
+If you see `"Token refresh failed"`:
+```bash
+# Re-authorize (takes 30 seconds)
+python3 scripts/auth_whoop.py
+```
+
+## Project Structure
+
+```
 ├── src/
-│   ├── config.py            # 统一配置（环境变量）
-│   ├── whoop_client.py      # WHOOP API 封装
-│   ├── feishu_client.py     # 飞书 API 封装
-│   ├── minimax_client.py    # MiniMax API 封装
-│   ├── database.py          # SQLite 操作
-│   ├── report_daily.py      # 晨报逻辑 + 预计算引擎
-│   ├── bot_poll.py          # 机器人问答 + 兜底推送逻辑
-│   ├── excel_manager.py     # Excel 生成
-│   ├── charts.py            # 趋势图生成
-│   └── github_secrets.py    # Token 自动轮换
+│   ├── token_manager.py   # Safe WHOOP token handling (core)
+│   ├── whoop_client.py     # WHOOP API client
+│   ├── config.py           # Configuration (env vars + paths)
+│   ├── database.py         # SQLite operations
+│   ├── bot_poll.py         # Feishu bot message handler
+│   ├── report_daily.py     # AI daily health report
+│   ├── feishu_client.py    # Feishu API client
+│   ├── minimax_client.py   # MiniMax AI client
+│   ├── charts.py           # Data visualization
+│   ├── excel_manager.py    # Excel export
+│   └── github_secrets.py   # GitHub Secrets rotation
 ├── scripts/
-│   └── auth_whoop.py        # 首次 WHOOP OAuth 授权
-├── data/                    # 运行时数据（DB / Excel / 图表 / 机器人状态）
-└── docs/
-    └── PRD.md               # 产品需求文档（完整方案说明）
+│   └── auth_whoop.py       # OAuth authorization helper
+├── data/
+│   ├── whoop_data.db       # SQLite database
+│   ├── whoop_health.xlsx   # Excel export
+│   └── bot_state.json      # Bot state tracking
+├── credentials.example.json # Template for credentials
+└── .github/workflows/
+    ├── bot-poll.yml         # Scheduled bot + sync
+    └── daily-report.yml     # Daily health report
 ```
 
----
+## API Rate Limits
 
-## 部署
+WHOOP API limits:
+- **100 requests/minute**
+- **10,000 requests/day**
 
-### 前置条件
-
-需要准备以下 4 个平台的凭证：
-
-| 平台 | 需要的凭证 |
-|------|-----------|
-| WHOOP 开发者平台 | Client ID、Client Secret、Access Token、Refresh Token |
-| 飞书开放平台 | App ID、App Secret、Chat ID、Bot Open ID |
-| MiniMax | API Key |
-| GitHub | Personal Access Token（用于 Token 自动轮换） |
-
-### 步骤
-
-1. **Fork 本仓库**
-
-2. **首次 WHOOP 授权**（本地运行一次）
-   ```bash
-   pip install requests
-   python scripts/auth_whoop.py
-   ```
-   按提示完成 OAuth 授权，记录输出的三个 token 值。
-
-3. **配置 GitHub Secrets**
-   进入仓库 Settings → Secrets and variables → Actions，添加以下 11 个 Secret：
-
-   | 名称 | 说明 |
-   |------|------|
-   | `WHOOP_CLIENT_ID` | WHOOP 开发者后台 |
-   | `WHOOP_CLIENT_SECRET` | WHOOP 开发者后台 |
-   | `WHOOP_ACCESS_TOKEN` | 授权脚本输出 |
-   | `WHOOP_REFRESH_TOKEN` | 授权脚本输出 |
-   | `WHOOP_TOKEN_SAVED_AT` | 授权脚本输出 |
-   | `MINIMAX_API_KEY` | MiniMax 控制台 |
-   | `FEISHU_APP_ID` | 飞书应用凭证页 |
-   | `FEISHU_APP_SECRET` | 飞书应用凭证页 |
-   | `FEISHU_CHAT_ID` | 飞书目标群 ID |
-   | `FEISHU_BOT_OPEN_ID` | 飞书机器人 Open ID |
-   | `GH_PAT` | GitHub Personal Access Token |
-
-4. **启用 Actions**
-   进入仓库 Actions 页面，点击启用 workflows。
-
-5. **验证**
-   手动触发一次 Daily Health Report，确认飞书群收到推送。
-
-### 排查常见问题
-
-| 现象 | 原因 |
-|------|------|
-| Actions 报 `EnvironmentError` | Secret 名称拼写错误或漏填 |
-| 飞书未收到消息 | 机器人未加入群，或 `FEISHU_CHAT_ID` 不对 |
-| WHOOP 数据为空 | 手环未同步到手机 App |
-| AI 报告未生成 | `MINIMAX_API_KEY` 有误或余额不足 |
-
----
-
-## 自定义
-
-| 想改什么 | 改哪里 |
-|---------|--------|
-| 晨报触发时间 | `daily-report.yml` 的 cron 表达式 |
-| 报告风格和字数 | `src/report_daily.py` 的 `DAILY_SYSTEM_PROMPT` |
-| 机器人回复风格 | `src/bot_poll.py` 的 `BOT_SYSTEM_PROMPT` |
-| 兜底推送时间（默认08:00） | `src/bot_poll.py` 的 `REPORT_HOUR_BEIJING` |
-| 换其他 AI 模型 | `src/minimax_client.py`（接口兼容 OpenAI 格式） |
-| 换其他推送渠道 | `src/feishu_client.py` |
-
----
-
-## 安全
-
-- 所有密钥存储在 GitHub Secrets，代码中零硬编码
-- WHOOP Token 全自动轮换，无需人工维护
-- `.gitignore` 排除所有本地敏感文件
-
----
+Typical usage with this setup: ~1,500 requests/day (15% of daily limit).
 
 ## License
 

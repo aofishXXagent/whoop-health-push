@@ -1,5 +1,8 @@
 .env
 *.token.json
+credentials.json
+credentials.json.backup
+credentials.json.tmp
 __pycache__/
 *.pyc
 .DS_Store
